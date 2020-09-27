@@ -1,6 +1,7 @@
 package main
 
 import (
+	ml "bitbucket.org/projectt_ct/websocker-service/middleware"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -11,7 +12,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"strconv"
 )
 
 const (
@@ -20,7 +20,7 @@ const (
 
 var (
 	configFile string
-	upgrader = websocket.Upgrader{}
+	upgrader   = websocket.Upgrader{}
 )
 
 type Config struct {
@@ -28,11 +28,10 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Host string `json:"host"`
-	Port int `json:"port"`
+	Host     string `json:"host"`
+	Port     int    `json:"port"`
 	EndPoint string `json:"end_point"`
 }
-
 
 func init() {
 	flag.StringVar(&configFile, "configFile", JSON_FILE, "Type your config file for parse them")
@@ -74,7 +73,7 @@ func parseJson(jsonConfig string) *Config {
 	return &rootConfig
 }
 
-func main()  {
+func main() {
 	config := parseJson(configFile)
 	if config == nil {
 		log.Println("Error to read config struct from json file")
@@ -83,9 +82,9 @@ func main()  {
 
 	serverConfig := config.Server
 	r := chi.NewRouter()
+	r.Use(ml.GetClients)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
-
 	r.Get(serverConfig.EndPoint, listClientSocket)
 
 	log.Println("Start listen server at ", fmt.Sprintf("%s:%d", serverConfig.Host, serverConfig.Port))
@@ -103,14 +102,9 @@ func listClientSocket(writer http.ResponseWriter, request *http.Request) {
 	}
 
 	defer wsConn.Close()
-	var room, key string
-	var userId int
 
-	room = chi.URLParam(request, "room")
-	key = chi.URLParam(request, "key")
-	userId, _ = strconv.Atoi(chi.URLParam(request, "id"))
-
-	log.Println("Request params", room, key, userId)
+	var clientContext = request.Context().Value("client")
+	log.Println("Request params", clientContext)
 	//for {
 	//	mt, message, err := wsConn.ReadMessage()
 	//	if err != nil {
@@ -125,4 +119,8 @@ func listClientSocket(writer http.ResponseWriter, request *http.Request) {
 	//		break
 	//	}
 	//}
+}
+
+func (cl *ml.Clients) Add() {
+	log.Println("add new client")
 }

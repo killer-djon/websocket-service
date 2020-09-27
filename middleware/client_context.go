@@ -8,19 +8,13 @@ import (
 	"strconv"
 )
 
-type Clients struct {
-	Room    *string
-	RoomKey *string
-	Id      *int
-}
-
 func GetClients(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 
 		room, roomKey := chi.URLParam(r, "room"), chi.URLParam(r, "key")
 		userId, _ := strconv.Atoi(chi.URLParam(r, "id"))
 
-		var clients = &Clients{
+		var clients = &Client{
 			Room:    &room,
 			RoomKey: &roomKey,
 			Id:      &userId,

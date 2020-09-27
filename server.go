@@ -1,7 +1,6 @@
 package main
 
 import (
-	ml "bitbucket.org/projectt_ct/websocker-service/middleware"
 	"crypto/sha1"
 	"encoding/base64"
 	"encoding/json"
@@ -21,22 +20,31 @@ const (
 	JSON_FILE = "./config.json"
 )
 
+type WsClient struct {
+	Room    string
+	RoomKey string
+	Id      int
+	WsConn  *websocket.Conn
+}
+
 type ServerConfig struct {
-	Host     string `json:"host"`
-	Port     int    `json:"port"`
-	EndPoint string `json:"end_point"`
+	Host              string `json:"host"`
+	Port              int    `json:"port"`
+	EndPoint          string `json:"end_point"`
+	SslCertificate    string `json:"ssl_certificate"`
+	SslCertificateKey string `json:"ssl_certificate_key"`
 }
 
 type Config struct {
 	Server ServerConfig
 }
 
-type ClientList map[string]*ml.Client
+type WsClientList map[string]*WsClient
 
 var (
 	configFile      string
 	upgrader        = websocket.Upgrader{}
-	clientConnected = make(ClientList)
+	clientConnected = make(WsClientList)
 )
 
 func init() {
@@ -86,7 +94,12 @@ func main() {
 
 	// Start listen server by config
 	log.Println("Start listen server at ", fmt.Sprintf("%s:%d", serverConfig.Host, serverConfig.Port))
-	err := http.ListenAndServe(fmt.Sprintf("%s:%d", serverConfig.Host, serverConfig.Port), r)
+	//err := http.ListenAndServe(fmt.Sprintf("%s:%d", serverConfig.Host, serverConfig.Port), r)
+	err := http.ListenAndServeTLS(
+		fmt.Sprintf("%s:%d", serverConfig.Host, serverConfig.Port),
+		serverConfig.SslCertificate,
+		serverConfig.SslCertificateKey,
+		r)
 	if err != nil {
 		log.Println("Error to start listen server", err)
 	}
@@ -154,7 +167,7 @@ func listClientSocket(writer http.ResponseWriter, request *http.Request) {
 	sha := base64.URLEncoding.EncodeToString(hashKey.Sum(nil))
 
 	if clientConnected[sha] == nil || clientConnected[sha].RoomKey != roomKey {
-		clientConnected[sha] = &ml.Client{
+		clientConnected[sha] = &WsClient{
 			Room:    room,
 			RoomKey: roomKey,
 			Id:      userId,

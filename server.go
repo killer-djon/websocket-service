@@ -1,8 +1,7 @@
 package main
 
 import (
-	"crypto/sha1"
-	"encoding/base64"
+	"bitbucket.org/projectt_ct/websocker-service/server"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -31,6 +30,7 @@ type ServerConfig struct {
 	Host              string `json:"host"`
 	Port              int    `json:"port"`
 	EndPoint          string `json:"end_point"`
+	UseSsl            bool   `json:"use_ssl"`
 	SslCertificate    string `json:"ssl_certificate"`
 	SslCertificateKey string `json:"ssl_certificate_key"`
 }
@@ -43,9 +43,15 @@ type WsClientList map[string]*WsClient
 
 var (
 	configFile      string
-	upgrader        = websocket.Upgrader{}
+	upgrader        = websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool {
+			return true
+		},
+	}
 	clientConnected = make(WsClientList)
 )
+
+var peers *server.Peers
 
 func init() {
 	flag.StringVar(&configFile, "configFile", JSON_FILE, "Type your config file for parse them")
@@ -81,101 +87,72 @@ func main() {
 		log.Println("Error to read config struct from json file")
 		return
 	}
-
+	peers = server.NewPeersConnection()
 	serverConfig := config.Server
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
-	r.Use(middleware.AllowContentType("application/json"))
+	//r.Use(middleware.AllowContentType("application/json"))
 	// Routes list
-	r.Get(serverConfig.EndPoint, listClientSocket)
-	r.Post("/publish/{clientRoom}/{userId}", publishMessageToClient)
+	r.Get("/room/{room}/{key}/{id}", startListenSocket)
+	r.Post("/publish/{room}/{key}/{id}", startPublishToSocket)
 
 	// Start listen server by config
 	log.Println("Start listen server at ", fmt.Sprintf("%s:%d", serverConfig.Host, serverConfig.Port))
-	//err := http.ListenAndServe(fmt.Sprintf("%s:%d", serverConfig.Host, serverConfig.Port), r)
-	err := http.ListenAndServeTLS(
-		fmt.Sprintf("%s:%d", serverConfig.Host, serverConfig.Port),
-		serverConfig.SslCertificate,
-		serverConfig.SslCertificateKey,
-		r)
+
+	var err error
+	if serverConfig.UseSsl == true {
+		err = http.ListenAndServeTLS(
+			fmt.Sprintf("%s:%d", serverConfig.Host, serverConfig.Port),
+			serverConfig.SslCertificate,
+			serverConfig.SslCertificateKey,
+			r)
+	}else{
+		err = http.ListenAndServe(fmt.Sprintf("%s:%d", serverConfig.Host, serverConfig.Port), r)
+	}
+
 	if err != nil {
 		log.Println("Error to start listen server", err)
 	}
 }
 
-func publishMessageToClient(writer http.ResponseWriter, request *http.Request) {
-	clientRoom := chi.URLParam(request, "clientRoom")
-	userId, _ := strconv.Atoi(chi.URLParam(request, "userId"))
-
-	log.Println("Must be publish to client room", clientRoom, userId)
-
-	if clientRoom == "" || userId == 0 {
-		log.Println("Published room is empty, roomKey is not set or userId is empty", clientRoom, userId)
+func startListenSocket(writer http.ResponseWriter, request *http.Request) {
+	peer, err := upgrader.Upgrade(writer, request, nil)
+	if err != nil {
+		log.Fatal("websocket conn failed", err)
 	}
 
-	byteKeyRoom := []byte(fmt.Sprintf("%s_%d", clientRoom, userId))
-	hashKey := sha1.New()
-	hashKey.Write(byteKeyRoom)
-	sha := base64.URLEncoding.EncodeToString(hashKey.Sum(nil))
+	room := chi.URLParam(request, "room")
+	key := chi.URLParam(request, "key")
+	id, _ := strconv.Atoi(chi.URLParam(request, "id"))
 
-	var toPublishClient = clientConnected[sha]
-	if toPublishClient == nil {
-		log.Println("Client for published is not connected now", userId)
-		return
-	}
-
-	log.Println("All clients connected", clientConnected)
-	bodyBytes, _ := ioutil.ReadAll(request.Body)
-
-	if len(bodyBytes) > 0 {
-		var bodyToPublish interface{}
-		err := json.Unmarshal(bodyBytes, &bodyToPublish)
-
-		if err != nil {
-			log.Println("Cant unmarshall client body message to publish", err)
-			return
-		}
-
-		err = toPublishClient.WsConn.WriteJSON(bodyToPublish)
-		if err != nil {
-			delete(clientConnected, sha)
-			log.Println("Error to publish message to user socket channel", err)
-			log.Println("Remain clients", clientConnected)
-			return
-		}
-	}
-
+	peers.Add(server.ClientSession{
+		UserId: id,
+		Key:    key,
+		Room:   room,
+		Peer:   peer,
+	})
+	go peers.Start(key)
 }
 
-func listClientSocket(writer http.ResponseWriter, request *http.Request) {
-	wsConn, err := upgrader.Upgrade(writer, request, nil)
-	if err != nil {
-		log.Println("Cant send upgrade status for client", err)
-		return
-	}
+func startPublishToSocket(writer http.ResponseWriter, request *http.Request) {
+	//log.Println("Connected client list", peers.List())
+	pList := peers.List()
+	if len(pList) > 0 {
+		//room := chi.URLParam(request, "room")
+		key := chi.URLParam(request, "key")
+		//id, _ := strconv.Atoi(chi.URLParam(request, "id"))
 
-	defer wsConn.Close()
+		if client := peers.Get(key); client != nil {
+			body, err := ioutil.ReadAll(request.Body)
+			if err != nil {
+				log.Println("Error to read body request", err)
+				return
+			}
 
-	room, roomKey := chi.URLParam(request, "room"), chi.URLParam(request, "key")
-	userId, _ := strconv.Atoi(chi.URLParam(request, "id"))
-
-	byteKeyRoom := []byte(fmt.Sprintf("%s_%d", room, userId))
-	hashKey := sha1.New()
-	hashKey.Write(byteKeyRoom)
-	sha := base64.URLEncoding.EncodeToString(hashKey.Sum(nil))
-
-	if clientConnected[sha] == nil || clientConnected[sha].RoomKey != roomKey {
-		clientConnected[sha] = &WsClient{
-			Room:    room,
-			RoomKey: roomKey,
-			Id:      userId,
-			WsConn:  wsConn,
+			defer request.Body.Close()
+			client.Peer.WriteMessage(websocket.TextMessage, body)
 		}
-	}
-
-	log.Println("Connected clients now is", len(clientConnected), clientConnected)
-	for {
 	}
 }

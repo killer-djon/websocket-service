@@ -127,31 +127,30 @@ func startListenSocket(writer http.ResponseWriter, request *http.Request) {
 	key := chi.URLParam(request, "key")
 	id, _ := strconv.Atoi(chi.URLParam(request, "id"))
 
-	peers.Add(server.ClientSession{
-		UserId: id,
-		Key:    key,
-		Room:   room,
-		Peer:   peer,
-	})
-	go peers.Start(key)
+	go func() {
+		newClient := peers.AddClient(&server.ClientSession{
+			UserId: id,
+			Key:    key,
+			Room:   room,
+			Peer:   peer,
+		})
+		peers.Start(newClient)
+	}()
 }
 
 func startPublishToSocket(writer http.ResponseWriter, request *http.Request) {
-	//log.Println("Connected client list", peers.List())
-	pList := peers.List()
-	if len(pList) > 0 {
-		//room := chi.URLParam(request, "room")
-		key := chi.URLParam(request, "key")
-		//id, _ := strconv.Atoi(chi.URLParam(request, "id"))
+	key := chi.URLParam(request, "key")
+	id, _ := strconv.Atoi(chi.URLParam(request, "id"))
 
-		if client := peers.Get(key); client != nil {
-			body, err := ioutil.ReadAll(request.Body)
-			if err != nil {
-				log.Println("Error to read body request", err)
-				return
-			}
-
-			defer request.Body.Close()
+	log.Println("Key for published", fmt.Sprintf("%s_%d", key, id))
+	if clients := peers.GetClientChannels(fmt.Sprintf("%s_%d", key, id)); clients != nil {
+		body, err := ioutil.ReadAll(request.Body)
+		if err != nil {
+			log.Println("Error to read body request", err)
+			return
+		}
+		defer request.Body.Close()
+		for _, client := range clients {
 			client.Peer.WriteMessage(websocket.TextMessage, body)
 		}
 	}

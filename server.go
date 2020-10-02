@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 )
 
 const (
@@ -93,8 +94,10 @@ func main() {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
-	//r.Use(middleware.AllowContentType("application/json"))
 	// Routes list
+	r.Get("/ws/{key}-{id}", listenPaymentWaitSocket)
+	r.Post("/publish", publishPaymentWaitChannel)
+
 	r.Get("/room/{room}/{key}/{id}", startListenSocket)
 	r.Post("/publish/{room}/{key}/{id}", startPublishToSocket)
 
@@ -117,6 +120,53 @@ func main() {
 	}
 }
 
+func listenPaymentWaitSocket(writer http.ResponseWriter, request *http.Request) {
+	peer, err := upgrader.Upgrade(writer, request, nil)
+	if err != nil {
+		log.Fatal("websocket conn failed", err)
+	}
+
+	key := chi.URLParam(request, "key")
+	id, _ := strconv.Atoi(chi.URLParam(request, "id"))
+
+	go func() {
+		newClient := peers.AddClient(&server.ClientSession{
+			UserId: id,
+			Key:    key,
+			Room:   nil,
+			Peer:   peer,
+		})
+		peers.Start(newClient)
+	}()
+}
+
+func publishPaymentWaitChannel(writer http.ResponseWriter, request *http.Request) {
+	query := request.URL.Query()
+	if query["id"] == nil {
+		log.Println("Cant publish to socket channel")
+		return
+	}
+
+	if query["id"] != nil {
+		strSplited := strings.Split(query["id"][0], "-")
+		key := strSplited[0]
+		id, _ := strconv.Atoi(strSplited[1])
+
+		if clients := peers.GetClientChannels(fmt.Sprintf("%s_%d", key, id)); clients != nil {
+			body, err := ioutil.ReadAll(request.Body)
+			if err != nil {
+				log.Println("Error to read body request", err)
+				return
+			}
+			
+			defer request.Body.Close()
+			for _, client := range clients {
+				client.Peer.WriteMessage(websocket.TextMessage, body)
+			}
+		}
+	}
+}
+
 func startListenSocket(writer http.ResponseWriter, request *http.Request) {
 	peer, err := upgrader.Upgrade(writer, request, nil)
 	if err != nil {
@@ -131,7 +181,7 @@ func startListenSocket(writer http.ResponseWriter, request *http.Request) {
 		newClient := peers.AddClient(&server.ClientSession{
 			UserId: id,
 			Key:    key,
-			Room:   room,
+			Room:   &room,
 			Peer:   peer,
 		})
 		peers.Start(newClient)

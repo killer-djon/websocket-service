@@ -27,7 +27,7 @@ type ClientSession struct {
 	HashKey string
 	UserId int
 	Key    string
-	Room   string
+	Room   *string
 	Peer   *websocket.Conn
 }
 
@@ -35,11 +35,14 @@ type Peers struct {
 	clients map[string][]*ClientSession
 }
 
+// NewPeersConnection make peer slice clients
+// for collect all connected clients to socket channels
 func NewPeersConnection() *Peers {
 	return &Peers{
 		clients: make(map[string][]*ClientSession),
 	}
 }
+
 
 func (p *Peers) AddClient(session *ClientSession) *ClientSession {
 	sessionKey := fmt.Sprintf("%s_%d", session.Key, session.UserId)
@@ -77,58 +80,6 @@ func (p *Peers) GetClientChannels(key string) []*ClientSession {
 	}
 	return nil
 }
-
-/*func (p *Peers) Add(client ClientSession) *ClientSession {
-	roomKey := MakeKeyHash(client.Key, client.UserId)
-	if p.clients[roomKey] == nil {
-		p.clients[roomKey] = &client
-		p.clients[roomKey].HashKey = roomKey
-		log.Println("New client connected", client)
-
-		return p.clients[roomKey]
-	}
-	return nil
-}
-
-func (p *Peers) Del(key string) {
-	if len(p.clients) > 0 {
-		for _, client := range p.clients {
-			if client.Key == key {
-				log.Println("Remove client from slice", client)
-				p.clients[client.HashKey].Peer.Close()
-				delete(p.clients, client.HashKey)
-			}
-		}
-	}
-}
-
-func (p *Peers) Get(key string) *ClientSession {
-	if len(p.clients) > 0 {
-		for _, client := range p.clients {
-			if client.Key == key {
-				log.Println("Finded client by room key", p.clients[client.HashKey])
-				return p.clients[client.HashKey]
-			}
-		}
-	}
-	return nil
-}
-
-
-func (p *Peers) Start(client *ClientSession) {
-	for {
-		if _, _, err := p.clients[client.HashKey].Peer.NextReader(); err != nil {
-			log.Println("Close connection for socket", p.clients[client.HashKey])
-			p.Del(client.Key)
-			break
-		}
-	}
-}
-
-func (p *Peers) List() map[string]*ClientSession {
-	return p.clients
-}*/
-
 
 func MakeKeyHash(key string, id int) string {
 	byteKeyRoom := []byte(fmt.Sprintf("%s_%d_%d", key, id, time.Now().UnixNano()))

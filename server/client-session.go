@@ -60,7 +60,47 @@ func (p *Peers) RemoveClient(key string, index int) []*ClientSession {
 }
 
 func (p *Peers) Start(client *ClientSession) {
-	for {
+	c := time.Tick(pingPeriod)
+	go func(){
+		for range c {
+			log.Println("Try to send PING message control to client")
+			if client.Peer != nil {
+				sessionKey := fmt.Sprintf("%s_%d", client.Key, client.UserId)
+				log.Println("All client session", p.clients[sessionKey])
+				for _, cl := range p.clients[sessionKey] {
+					if err := cl.Peer.WriteControl(websocket.PingMessage, []byte("\n"), time.Now().Add(writeWait)); err != nil {
+						log.Println("Handle error for write control message ping", err)
+					}
+				}
+			}
+		}
+	}()
+
+	client.Peer.SetPongHandler(func(string) error { return client.Peer.SetReadDeadline(time.Now().Add(pingPeriod)) })
+	go func(){
+		for {
+			log.Println("Try to send PONG message control to client")
+			if client.Peer == nil {
+				log.Println("Client disconnected", client)
+				break
+			}else{
+				if _, _, err := client.Peer.NextReader(); err != nil {
+					log.Println("Close connection for socket", client)
+					sessionKey := fmt.Sprintf("%s_%d", client.Key, client.UserId)
+					for i, cl := range p.clients[sessionKey] {
+						if cl.Peer == client.Peer {
+							p.clients[sessionKey] = p.RemoveClient(sessionKey, i)
+							cl.Peer.Close()
+
+						}
+					}
+					break
+				}
+			}
+		}
+	}()
+
+	/*for {
 		if _, _, err := client.Peer.NextReader(); err != nil {
 			log.Println("Close connection for socket", client)
 			sessionKey := fmt.Sprintf("%s_%d", client.Key, client.UserId)
@@ -71,7 +111,7 @@ func (p *Peers) Start(client *ClientSession) {
 			}
 			break
 		}
-	}
+	}*/
 }
 
 func (p *Peers) GetClientChannels(key string) []*ClientSession {

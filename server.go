@@ -48,8 +48,9 @@ var (
 		CheckOrigin: func(r *http.Request) bool {
 			return true
 		},
+		ReadBufferSize:  1024,
+		WriteBufferSize: 1024,
 	}
-	clientConnected = make(WsClientList)
 )
 
 var peers *server.Peers
@@ -158,7 +159,7 @@ func publishPaymentWaitChannel(writer http.ResponseWriter, request *http.Request
 				log.Println("Error to read body request", err)
 				return
 			}
-			
+
 			defer request.Body.Close()
 			for _, client := range clients {
 				client.Peer.WriteMessage(websocket.TextMessage, body)

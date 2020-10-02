@@ -1,7 +1,7 @@
 package main
 
 import (
-	"bitbucket.org/projectt_ct/websocker-service/server"
+	"bitbucket.org/projectt_ct/websocket-service/server"
 	"encoding/json"
 	"flag"
 	"fmt"

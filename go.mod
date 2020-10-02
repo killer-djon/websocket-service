@@ -1,4 +1,4 @@
-module bitbucket.org/projectt_ct/websocker-service
+module bitbucket.org/projectt_ct/websocket-service
 
 go 1.13
 

@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi"
 	"github.com/go-chi/chi/middleware"
 	"github.com/gorilla/websocket"
+	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 
 const (
 	JSON_FILE = "./config.json"
+	LOG_FILE = "/var/log/websocket-service.log"
 )
 
 type WsClient struct {
@@ -44,6 +46,7 @@ type WsClientList map[string]*WsClient
 
 var (
 	configFile      string
+	logFile string
 	upgrader        = websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
 			return true
@@ -57,7 +60,17 @@ var peers *server.Peers
 
 func init() {
 	flag.StringVar(&configFile, "configFile", JSON_FILE, "Type your config file for parse them")
+	flag.StringVar(&logFile, "logFile", LOG_FILE, "Set log file for debug info")
 	flag.Parse()
+
+	// Write log data into console and log file
+	f, err := os.OpenFile(logFile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	if err != nil {
+		log.Fatalf("error opening file: %v", err)
+	}
+
+	wrt := io.MultiWriter(os.Stdout, f)
+	log.SetOutput(wrt)
 }
 
 func parseJson(jsonConfig string) *Config {

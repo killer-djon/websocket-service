@@ -19,7 +19,7 @@ import (
 
 const (
 	JSON_FILE = "./config.json"
-	LOG_FILE = "/var/log/websocket-service.log"
+	LOG_FILE = "/var/log/websocket-service/websocket-service.log"
 )
 
 type WsClient struct {
@@ -63,6 +63,9 @@ func init() {
 	flag.StringVar(&logFile, "logFile", LOG_FILE, "Set log file for debug info")
 	flag.Parse()
 
+	if _, err := os.Stat("/var/log/websocket-service"); os.IsNotExist(err) {
+		os.MkdirAll("/var/log/websocket-service", 0775)
+	}
 	// Write log data into console and log file
 	f, err := os.OpenFile(logFile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
 	if err != nil {

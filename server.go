@@ -1,47 +1,79 @@
 package main
 
 import (
-	ml "bitbucket.org/projectt_ct/websocker-service/middleware"
-	"crypto/sha1"
-	"encoding/base64"
+	"bitbucket.org/projectt_ct/websocket-service/server"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"github.com/go-chi/chi"
 	"github.com/go-chi/chi/middleware"
 	"github.com/gorilla/websocket"
+	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 )
 
 const (
 	JSON_FILE = "./config.json"
+	LOG_FILE = "/var/log/websocket-service/websocket-service.log"
 )
 
+type WsClient struct {
+	Room    string
+	RoomKey string
+	Id      int
+	WsConn  *websocket.Conn
+}
+
 type ServerConfig struct {
-	Host     string `json:"host"`
-	Port     int    `json:"port"`
-	EndPoint string `json:"end_point"`
+	Host              string `json:"host"`
+	Port              int    `json:"port"`
+	EndPoint          string `json:"end_point"`
+	UseSsl            bool   `json:"use_ssl"`
+	SslCertificate    string `json:"ssl_certificate"`
+	SslCertificateKey string `json:"ssl_certificate_key"`
 }
 
 type Config struct {
 	Server ServerConfig
 }
 
-type ClientList map[string]*ml.Client
+type WsClientList map[string]*WsClient
 
 var (
 	configFile      string
-	upgrader        = websocket.Upgrader{}
-	clientConnected = make(ClientList)
+	logFile string
+	upgrader        = websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool {
+			return true
+		},
+		ReadBufferSize:  1024,
+		WriteBufferSize: 1024,
+	}
 )
+
+var peers *server.Peers
 
 func init() {
 	flag.StringVar(&configFile, "configFile", JSON_FILE, "Type your config file for parse them")
+	flag.StringVar(&logFile, "logFile", LOG_FILE, "Set log file for debug info")
 	flag.Parse()
+
+	if _, err := os.Stat("/var/log/websocket-service"); os.IsNotExist(err) {
+		os.MkdirAll("/var/log/websocket-service", 0775)
+	}
+	// Write log data into console and log file
+	f, err := os.OpenFile(logFile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	if err != nil {
+		log.Fatalf("error opening file: %v", err)
+	}
+
+	wrt := io.MultiWriter(os.Stdout, f)
+	log.SetOutput(wrt)
 }
 
 func parseJson(jsonConfig string) *Config {
@@ -73,96 +105,120 @@ func main() {
 		log.Println("Error to read config struct from json file")
 		return
 	}
-
+	peers = server.NewPeersConnection()
 	serverConfig := config.Server
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
-	r.Use(middleware.AllowContentType("application/json"))
 	// Routes list
-	r.Get(serverConfig.EndPoint, listClientSocket)
-	r.Post("/publish/{clientRoom}/{userId}", publishMessageToClient)
+	r.Get("/ws/{key}-{id}", listenPaymentWaitSocket)
+	r.Post("/publish", publishPaymentWaitChannel)
+
+	r.Get("/room/{room}/{key}/{id}", startListenSocket)
+	r.Post("/publish/{room}/{key}/{id}", startPublishToSocket)
 
 	// Start listen server by config
 	log.Println("Start listen server at ", fmt.Sprintf("%s:%d", serverConfig.Host, serverConfig.Port))
-	err := http.ListenAndServe(fmt.Sprintf("%s:%d", serverConfig.Host, serverConfig.Port), r)
+
+	var err error
+	if serverConfig.UseSsl == true {
+		err = http.ListenAndServeTLS(
+			fmt.Sprintf("%s:%d", serverConfig.Host, serverConfig.Port),
+			serverConfig.SslCertificate,
+			serverConfig.SslCertificateKey,
+			r)
+	}else{
+		err = http.ListenAndServe(fmt.Sprintf("%s:%d", serverConfig.Host, serverConfig.Port), r)
+	}
+
 	if err != nil {
 		log.Println("Error to start listen server", err)
 	}
 }
 
-func publishMessageToClient(writer http.ResponseWriter, request *http.Request) {
-	clientRoom := chi.URLParam(request, "clientRoom")
-	userId, _ := strconv.Atoi(chi.URLParam(request, "userId"))
-
-	log.Println("Must be publish to client room", clientRoom, userId)
-
-	if clientRoom == "" || userId == 0 {
-		log.Println("Published room is empty, roomKey is not set or userId is empty", clientRoom, userId)
+func listenPaymentWaitSocket(writer http.ResponseWriter, request *http.Request) {
+	peer, err := upgrader.Upgrade(writer, request, nil)
+	if err != nil {
+		log.Fatal("websocket conn failed", err)
 	}
 
-	byteKeyRoom := []byte(fmt.Sprintf("%s_%d", clientRoom, userId))
-	hashKey := sha1.New()
-	hashKey.Write(byteKeyRoom)
-	sha := base64.URLEncoding.EncodeToString(hashKey.Sum(nil))
+	key := chi.URLParam(request, "key")
+	id, _ := strconv.Atoi(chi.URLParam(request, "id"))
 
-	var toPublishClient = clientConnected[sha]
-	if toPublishClient == nil {
-		log.Println("Client for published is not connected now", userId)
-		return
-	}
-
-	log.Println("All clients connected", clientConnected)
-	bodyBytes, _ := ioutil.ReadAll(request.Body)
-
-	if len(bodyBytes) > 0 {
-		var bodyToPublish interface{}
-		err := json.Unmarshal(bodyBytes, &bodyToPublish)
-
-		if err != nil {
-			log.Println("Cant unmarshall client body message to publish", err)
-			return
-		}
-
-		err = toPublishClient.WsConn.WriteJSON(bodyToPublish)
-		if err != nil {
-			delete(clientConnected, sha)
-			log.Println("Error to publish message to user socket channel", err)
-			log.Println("Remain clients", clientConnected)
-			return
-		}
-	}
-
+	go func() {
+		newClient := peers.AddClient(&server.ClientSession{
+			UserId: id,
+			Key:    key,
+			Room:   nil,
+			Peer:   peer,
+		})
+		peers.Start(newClient)
+	}()
 }
 
-func listClientSocket(writer http.ResponseWriter, request *http.Request) {
-	wsConn, err := upgrader.Upgrade(writer, request, nil)
-	if err != nil {
-		log.Println("Cant send upgrade status for client", err)
+func publishPaymentWaitChannel(writer http.ResponseWriter, request *http.Request) {
+	query := request.URL.Query()
+	if query["id"] == nil {
+		log.Println("Cant publish to socket channel")
 		return
 	}
 
-	defer wsConn.Close()
+	if query["id"] != nil {
+		strSplited := strings.Split(query["id"][0], "-")
+		key := strSplited[0]
+		id, _ := strconv.Atoi(strSplited[1])
 
-	room, roomKey := chi.URLParam(request, "room"), chi.URLParam(request, "key")
-	userId, _ := strconv.Atoi(chi.URLParam(request, "id"))
+		if clients := peers.GetClientChannels(fmt.Sprintf("%s_%d", key, id)); clients != nil {
+			body, err := ioutil.ReadAll(request.Body)
+			if err != nil {
+				log.Println("Error to read body request", err)
+				return
+			}
 
-	byteKeyRoom := []byte(fmt.Sprintf("%s_%d", room, userId))
-	hashKey := sha1.New()
-	hashKey.Write(byteKeyRoom)
-	sha := base64.URLEncoding.EncodeToString(hashKey.Sum(nil))
-
-	if clientConnected[sha] == nil || clientConnected[sha].RoomKey != roomKey {
-		clientConnected[sha] = &ml.Client{
-			Room:    room,
-			RoomKey: roomKey,
-			Id:      userId,
-			WsConn:  wsConn,
+			defer request.Body.Close()
+			for _, client := range clients {
+				client.Peer.WriteMessage(websocket.TextMessage, body)
+			}
 		}
 	}
+}
 
-	log.Println("Connected clients now is", len(clientConnected), clientConnected)
-	for {
+func startListenSocket(writer http.ResponseWriter, request *http.Request) {
+	peer, err := upgrader.Upgrade(writer, request, nil)
+	if err != nil {
+		log.Fatal("websocket conn failed", err)
+	}
+
+	room := chi.URLParam(request, "room")
+	key := chi.URLParam(request, "key")
+	id, _ := strconv.Atoi(chi.URLParam(request, "id"))
+
+	go func() {
+		newClient := peers.AddClient(&server.ClientSession{
+			UserId: id,
+			Key:    key,
+			Room:   &room,
+			Peer:   peer,
+		})
+		peers.Start(newClient)
+	}()
+}
+
+func startPublishToSocket(writer http.ResponseWriter, request *http.Request) {
+	key := chi.URLParam(request, "key")
+	id, _ := strconv.Atoi(chi.URLParam(request, "id"))
+
+	log.Println("Key for published", fmt.Sprintf("%s_%d", key, id))
+	if clients := peers.GetClientChannels(fmt.Sprintf("%s_%d", key, id)); clients != nil {
+		body, err := ioutil.ReadAll(request.Body)
+		if err != nil {
+			log.Println("Error to read body request", err)
+			return
+		}
+		defer request.Body.Close()
+		for _, client := range clients {
+			client.Peer.WriteMessage(websocket.TextMessage, body)
+		}
 	}
 }

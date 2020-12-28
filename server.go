@@ -72,7 +72,7 @@ func init() {
 		log.Fatalf("error opening file: %v", err)
 	}
 
-	wrt := io.MultiWriter(os.Stdout, f)
+	wrt := io.MultiWriter(os.Stdout)
 	log.SetOutput(wrt)
 }
 

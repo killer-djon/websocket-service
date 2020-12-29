@@ -67,12 +67,12 @@ func init() {
 		os.MkdirAll("/var/log/websocket-service", 0775)
 	}
 	// Write log data into console and log file
-	f, err := os.OpenFile(logFile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	/*f, err := os.OpenFile(logFile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
 	if err != nil {
 		log.Fatalf("error opening file: %v", err)
 	}
-
-	wrt := io.MultiWriter(os.Stdout, f)
+	*/
+	wrt := io.MultiWriter(os.Stdout)
 	log.SetOutput(wrt)
 }
 

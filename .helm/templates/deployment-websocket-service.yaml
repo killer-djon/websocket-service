@@ -30,7 +30,7 @@ spec:
             # - /usr/bin/tail
             # - -f
             # - /dev/null
-            - /app/websocker-service
+            - /app/websocket-service
             - -configFile
             - /app/config.json
           securityContext:

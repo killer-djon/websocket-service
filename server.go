@@ -217,8 +217,10 @@ func startPublishToSocket(writer http.ResponseWriter, request *http.Request) {
 			return
 		}
 		defer request.Body.Close()
+
 		for _, client := range clients {
-			client.Peer.WriteMessage(websocket.TextMessage, body)
+			//client.Peer.WriteMessage(websocket.TextMessage, body)
+			go client.Publish(body)
 		}
 	}
 }

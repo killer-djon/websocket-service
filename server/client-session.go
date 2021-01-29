@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/gorilla/websocket"
 	"log"
+	"sync"
 	"time"
 )
 
@@ -25,10 +26,11 @@ const (
 
 type ClientSession struct {
 	HashKey string
-	UserId int
-	Key    string
-	Room   *string
-	Peer   *websocket.Conn
+	UserId  int
+	Key     string
+	Room    *string
+	Peer    *websocket.Conn
+	mu      sync.Mutex
 }
 
 type Peers struct {
@@ -42,7 +44,6 @@ func NewPeersConnection() *Peers {
 		clients: make(map[string][]*ClientSession),
 	}
 }
-
 
 func (p *Peers) AddClient(session *ClientSession) *ClientSession {
 	sessionKey := fmt.Sprintf("%s_%d", session.Key, session.UserId)
@@ -61,7 +62,7 @@ func (p *Peers) RemoveClient(key string, index int) []*ClientSession {
 
 func (p *Peers) Start(client *ClientSession) {
 	c := time.Tick(pingPeriod)
-	go func(){
+	go func() {
 		for range c {
 			log.Println("Try to send PING message control to client")
 			if client.Peer != nil {
@@ -77,13 +78,13 @@ func (p *Peers) Start(client *ClientSession) {
 	}()
 
 	client.Peer.SetPongHandler(func(string) error { return client.Peer.SetReadDeadline(time.Now().Add(pingPeriod)) })
-	go func(){
+	go func() {
 		for {
 			log.Println("Try to send PONG message control to client")
 			if client.Peer == nil {
 				log.Println("Client disconnected", client)
 				break
-			}else{
+			} else {
 				if _, _, err := client.Peer.NextReader(); err != nil {
 					log.Println("Close connection for socket", client)
 					sessionKey := fmt.Sprintf("%s_%d", client.Key, client.UserId)
@@ -128,4 +129,11 @@ func MakeKeyHash(key string, id int) string {
 	sha := base64.URLEncoding.EncodeToString(hashKey.Sum(nil))
 
 	return sha
+}
+
+func (client *ClientSession) Publish(body []byte) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+
+	client.Peer.WriteMessage(websocket.TextMessage, body)
 }

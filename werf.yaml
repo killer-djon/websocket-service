@@ -8,7 +8,7 @@ configVersion: 1
 {{ include "artifact/build.yaml.tmpl" . }}
 ---
 image: "websocket-service"
-from: alpine:3.12
+from: alpine:3.13.1
 ansible:
   beforeInstall:
   - shell: addgroup -S app

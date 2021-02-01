@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bitbucket.org/projectt_ct/websocket-service/server"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -13,7 +14,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
-	"time"
+	"strings"
 )
 
 const (
@@ -24,24 +25,14 @@ const (
 type ServerConfig struct {
 	Host              string `json:"host"`
 	Port              int    `json:"port"`
-	EndPoint          string `json:"end_point"`
 	UseSsl            bool   `json:"use_ssl"`
 	SslCertificate    string `json:"ssl_certificate"`
 	SslCertificateKey string `json:"ssl_certificate_key"`
 }
 
 type Config struct {
-	Server ServerConfig
+	Server ServerConfig `json:"server"`
 }
-
-type WsClient struct {
-	Room       string
-	RoomKey    string
-	Id         int
-	ClientConn []*websocket.Conn
-}
-
-var WsClientList = make(map[string]*WsClient)
 
 var (
 	configFile string
@@ -99,15 +90,26 @@ func main() {
 
 	serverConfig := config.Server
 
+	pool := server.NewClientPool()
+	go pool.StartCollector()
+
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	// Routes list
-	//r.Get("/ws/{key}-{id}", listenPaymentWaitSocket)
-	//r.Post("/publish", publishPaymentWaitChannel)
+	r.Get("/ws/{key}-{id}", func(writer http.ResponseWriter, request *http.Request) {
+		listenPaymentWaitSocket(pool, writer, request)
+	})
+	r.Post("/publish", func(writer http.ResponseWriter, request *http.Request) {
+		publishPaymentWaitChannel(pool, writer, request)
+	})
 
-	r.Get("/room/{room}/{key}/{id}", startListenSocket)
-	r.Post("/publish/{room}/{key}/{id}", startPublishToSocket)
+	r.Get("/room/{room}/{key}/{id}", func(writer http.ResponseWriter, request *http.Request) {
+		startListenSocket(pool, writer, request)
+	})
+	r.Post("/publish/{room}/{key}/{id}", func(writer http.ResponseWriter, request *http.Request) {
+		startPublishToSocket(pool, writer, request)
+	})
 
 	// Start listen server by config
 	log.Println("Start listen server at ", fmt.Sprintf("%s:%d", serverConfig.Host, serverConfig.Port))
@@ -128,47 +130,62 @@ func main() {
 	}
 }
 
-//
-//func listenPaymentWaitSocket(writer http.ResponseWriter, request *http.Request) {
-//	peer, err := upgrader.Upgrade(writer, request, nil)
-//	if err != nil {
-//		log.Fatal("websocket conn failed", err)
-//	}
-//
-//	key := chi.URLParam(request, "key")
-//	id, _ := strconv.Atoi(chi.URLParam(request, "id"))
-//
-//
-//}
-//
-//func publishPaymentWaitChannel(writer http.ResponseWriter, request *http.Request) {
-//	query := request.URL.Query()
-//	if query["id"] == nil {
-//		log.Println("Cant publish to socket channel")
-//		return
-//	}
-//
-//	if query["id"] != nil {
-//		strSplited := strings.Split(query["id"][0], "-")
-//		key := strSplited[0]
-//		id, _ := strconv.Atoi(strSplited[1])
-//
-//		if clients := peers.GetClientChannels(fmt.Sprintf("%s_%d", key, id)); clients != nil {
-//			body, err := ioutil.ReadAll(request.Body)
-//			if err != nil {
-//				log.Println("Error to read body request", err)
-//				return
-//			}
-//
-//			defer request.Body.Close()
-//			for _, client := range clients {
-//				client.Peer.WriteMessage(websocket.TextMessage, body)
-//			}
-//		}
-//	}
-//}
+func listenPaymentWaitSocket(pool *server.Pool, writer http.ResponseWriter, request *http.Request) {
+	ws, err := upgrader.Upgrade(writer, request, nil)
+	if err != nil {
+		log.Fatal("websocket conn failed", err)
+	}
 
-func startListenSocket(writer http.ResponseWriter, request *http.Request) {
+	key := chi.URLParam(request, "key")
+	id, _ := strconv.Atoi(chi.URLParam(request, "id"))
+
+	channelClientKey := fmt.Sprintf("%s_%d", key, id)
+	var client = &server.Client{
+		ChannelKey: channelClientKey,
+		Pool: pool,
+		Conn: ws,
+		Send: make(chan []byte),
+	}
+
+	client.Pool.Register <- client
+	go client.WritePump()
+	go client.ReadPump()
+}
+
+func publishPaymentWaitChannel(pool *server.Pool, writer http.ResponseWriter, request *http.Request) {
+	query := request.URL.Query()
+	if query["id"] == nil {
+		log.Println("Cant publish to socket channel")
+		return
+	}
+
+	if query["id"] != nil {
+		strSplited := strings.Split(query["id"][0], "-")
+
+		key := strSplited[0]
+		id, _ := strconv.Atoi(strSplited[1])
+
+		channelKey := fmt.Sprintf("%s_%d", key, id)
+		if pool.Clients[channelKey] != nil {
+			body, err := ioutil.ReadAll(request.Body)
+			if err != nil {
+				log.Println("Error to read body request", err)
+				return
+			}
+			defer request.Body.Close()
+
+			if pool.Clients[channelKey] != nil {
+				for client, _ := range pool.Clients[channelKey] {
+					if client.ChannelKey == channelKey {
+						client.Send <- body
+					}
+				}
+			}
+		}
+	}
+}
+
+func startListenSocket(pool *server.Pool, writer http.ResponseWriter, request *http.Request) {
 	ws, err := upgrader.Upgrade(writer, request, nil)
 	if err != nil {
 		log.Fatal("websocket conn failed", err)
@@ -178,95 +195,28 @@ func startListenSocket(writer http.ResponseWriter, request *http.Request) {
 	key := chi.URLParam(request, "key")
 	id, _ := strconv.Atoi(chi.URLParam(request, "id"))
 
-	clientWsChannel := fmt.Sprintf("%s_%s_%d", room, key, id)
-	if WsClientList[clientWsChannel] == nil {
-		var connPool = make([]*websocket.Conn, 0)
-		connPool = append(connPool, ws)
-		WsClientList[clientWsChannel] = &WsClient{
-			Room:       room,
-			RoomKey:    key,
-			Id:         id,
-			ClientConn: connPool,
-		}
-	} else {
-		WsClientList[clientWsChannel].ClientConn = append(
-			WsClientList[clientWsChannel].ClientConn,
-			ws,
-		)
+	channelClientKey := fmt.Sprintf("%s_%s_%d", room, key, id)
+	var client = &server.Client{
+		ChannelKey: channelClientKey,
+		Pool: pool,
+		Conn: ws,
+		Send: make(chan []byte),
 	}
 
-	go writePump(WsClientList[clientWsChannel])
-	log.Println("Connect clients instance", WsClientList[clientWsChannel].ClientConn)
+	client.Pool.Register <- client
+	go client.WritePump()
+	go client.ReadPump()
 }
 
-const (
-	// Time allowed to write a message to the peer.
-	writeWait = 10 * time.Second
-
-	// Time allowed to read the next pong message from the peer.
-	pongWait = 60 * time.Second
-
-	// Send pings to peer with this period. Must be less than pongWait.
-	pingPeriod = (pongWait * 9) / 10
-
-	// Maximum message size allowed from peer.
-	maxMessageSize = 512
-)
-
-func writePump(client *WsClient) {
-	c := time.Tick(pingPeriod)
-	go func(){
-		select {
-			case <- c:
-				log.Println("Try to send PING message control to client", client.ClientConn)
-				if client.ClientConn != nil {
-					for _, cl := range client.ClientConn {
-						if err := cl.WriteControl(websocket.PingMessage, []byte("\n"), time.Now().Add(writeWait)); err != nil {
-							log.Println("Handle error for write control message ping", err)
-						}
-					}
-				}
-		}
-	}()
-
-	for key, cl := range client.ClientConn {
-		cl.SetPongHandler(func(string) error { return cl.SetReadDeadline(time.Now().Add(pingPeriod)) })
-		go func(key int){
-			for {
-				log.Println("Try to send PONG message control to client", client.Id, client.RoomKey, cl)
-				if cl == nil {
-					log.Println("Client disconnected", client)
-					break
-				}else{
-					if _, _, err := cl.NextReader(); err != nil {
-						log.Println("Close connection for socket", client)
-						err := cl.Close()
-						if err !=nil {
-							log.Println("Error for close connection", cl)
-						}
-						break
-					}
-				}
-			}
-		}(key)
-	}
-}
-
-type BodyResponse struct {
-	Body   []byte
-	Client *WsClient
-}
-var bodyResponse = make(chan BodyResponse)
-func startPublishToSocket(writer http.ResponseWriter, request *http.Request) {
+func startPublishToSocket(pool *server.Pool, writer http.ResponseWriter, request *http.Request) {
 	room := chi.URLParam(request, "room")
 	key := chi.URLParam(request, "key")
 	id, _ := strconv.Atoi(chi.URLParam(request, "id"))
 
-	log.Println("Select from all clients for published", WsClientList)
-	clientWsChannel := fmt.Sprintf("%s_%s_%d", room, key, id)
+	log.Println("Key for published", fmt.Sprintf("%s_%s_%d", room, key, id))
+	channelKey := fmt.Sprintf("%s_%s_%d", room, key, id)
 
-	if WsClientList[clientWsChannel] != nil {
-
+	if pool.Clients[channelKey] != nil {
 		body, err := ioutil.ReadAll(request.Body)
 		if err != nil {
 			log.Println("Error to read body request", err)
@@ -274,27 +224,12 @@ func startPublishToSocket(writer http.ResponseWriter, request *http.Request) {
 		}
 		defer request.Body.Close()
 
-
-		go func() {
-			for {
-				bodyResponse <- BodyResponse{
-					Body:   body,
-					Client: WsClientList[clientWsChannel],
+		if pool.Clients[channelKey] != nil {
+			for client, _ := range pool.Clients[channelKey] {
+				if client.ChannelKey == channelKey {
+					client.Send <- body
 				}
 			}
-		}()
-
-		writeToChannel(bodyResponse)
-	}
-
-}
-
-func writeToChannel(body <-chan BodyResponse) {
-	client := <-body
-	log.Println("Published for client", client.Body, client.Client)
-	for _, cl := range client.Client.ClientConn {
-		if cl != nil {
-			cl.WriteMessage(websocket.TextMessage, client.Body)
 		}
 	}
 }

@@ -19,35 +19,25 @@ import (
 
 const (
 	JSON_FILE = "./config.json"
-	LOG_FILE = "/var/log/websocket-service/websocket-service.log"
+	LOG_FILE  = "/var/log/websocket-service/websocket-service.log"
 )
-
-type WsClient struct {
-	Room    string
-	RoomKey string
-	Id      int
-	WsConn  *websocket.Conn
-}
 
 type ServerConfig struct {
 	Host              string `json:"host"`
 	Port              int    `json:"port"`
-	EndPoint          string `json:"end_point"`
 	UseSsl            bool   `json:"use_ssl"`
 	SslCertificate    string `json:"ssl_certificate"`
 	SslCertificateKey string `json:"ssl_certificate_key"`
 }
 
 type Config struct {
-	Server ServerConfig
+	Server ServerConfig `json:"server"`
 }
 
-type WsClientList map[string]*WsClient
-
 var (
-	configFile      string
-	logFile string
-	upgrader        = websocket.Upgrader{
+	configFile string
+	logFile    string
+	upgrader   = websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
 			return true
 		},
@@ -55,8 +45,6 @@ var (
 		WriteBufferSize: 1024,
 	}
 )
-
-var peers *server.Peers
 
 func init() {
 	flag.StringVar(&configFile, "configFile", JSON_FILE, "Type your config file for parse them")
@@ -66,12 +54,6 @@ func init() {
 	if _, err := os.Stat("/var/log/websocket-service"); os.IsNotExist(err) {
 		os.MkdirAll("/var/log/websocket-service", 0775)
 	}
-	// Write log data into console and log file
-	/*f, err := os.OpenFile(logFile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
-	if err != nil {
-		log.Fatalf("error opening file: %v", err)
-	}
-	*/
 	wrt := io.MultiWriter(os.Stdout)
 	log.SetOutput(wrt)
 }
@@ -105,18 +87,29 @@ func main() {
 		log.Println("Error to read config struct from json file")
 		return
 	}
-	peers = server.NewPeersConnection()
+
 	serverConfig := config.Server
+
+	pool := server.NewClientPool()
+	go pool.StartCollector()
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	// Routes list
-	r.Get("/ws/{key}-{id}", listenPaymentWaitSocket)
-	r.Post("/publish", publishPaymentWaitChannel)
+	r.Get("/ws/{key}-{id}", func(writer http.ResponseWriter, request *http.Request) {
+		listenPaymentWaitSocket(pool, writer, request)
+	})
+	r.Post("/publish", func(writer http.ResponseWriter, request *http.Request) {
+		publishPaymentWaitChannel(pool, writer, request)
+	})
 
-	r.Get("/room/{room}/{key}/{id}", startListenSocket)
-	r.Post("/publish/{room}/{key}/{id}", startPublishToSocket)
+	r.Get("/room/{room}/{key}/{id}", func(writer http.ResponseWriter, request *http.Request) {
+		startListenSocket(pool, writer, request)
+	})
+	r.Post("/publish/{room}/{key}/{id}", func(writer http.ResponseWriter, request *http.Request) {
+		startPublishToSocket(pool, writer, request)
+	})
 
 	// Start listen server by config
 	log.Println("Start listen server at ", fmt.Sprintf("%s:%d", serverConfig.Host, serverConfig.Port))
@@ -128,7 +121,7 @@ func main() {
 			serverConfig.SslCertificate,
 			serverConfig.SslCertificateKey,
 			r)
-	}else{
+	} else {
 		err = http.ListenAndServe(fmt.Sprintf("%s:%d", serverConfig.Host, serverConfig.Port), r)
 	}
 
@@ -137,8 +130,8 @@ func main() {
 	}
 }
 
-func listenPaymentWaitSocket(writer http.ResponseWriter, request *http.Request) {
-	peer, err := upgrader.Upgrade(writer, request, nil)
+func listenPaymentWaitSocket(pool *server.Pool, writer http.ResponseWriter, request *http.Request) {
+	ws, err := upgrader.Upgrade(writer, request, nil)
 	if err != nil {
 		log.Fatal("websocket conn failed", err)
 	}
@@ -146,18 +139,20 @@ func listenPaymentWaitSocket(writer http.ResponseWriter, request *http.Request) 
 	key := chi.URLParam(request, "key")
 	id, _ := strconv.Atoi(chi.URLParam(request, "id"))
 
-	go func() {
-		newClient := peers.AddClient(&server.ClientSession{
-			UserId: id,
-			Key:    key,
-			Room:   nil,
-			Peer:   peer,
-		})
-		peers.Start(newClient)
-	}()
+	channelClientKey := fmt.Sprintf("%s_%d", key, id)
+	var client = &server.Client{
+		ChannelKey: channelClientKey,
+		Pool: pool,
+		Conn: ws,
+		Send: make(chan []byte),
+	}
+
+	client.Pool.Register <- client
+	go client.WritePump()
+	go client.ReadPump()
 }
 
-func publishPaymentWaitChannel(writer http.ResponseWriter, request *http.Request) {
+func publishPaymentWaitChannel(pool *server.Pool, writer http.ResponseWriter, request *http.Request) {
 	query := request.URL.Query()
 	if query["id"] == nil {
 		log.Println("Cant publish to socket channel")
@@ -166,26 +161,32 @@ func publishPaymentWaitChannel(writer http.ResponseWriter, request *http.Request
 
 	if query["id"] != nil {
 		strSplited := strings.Split(query["id"][0], "-")
+
 		key := strSplited[0]
 		id, _ := strconv.Atoi(strSplited[1])
 
-		if clients := peers.GetClientChannels(fmt.Sprintf("%s_%d", key, id)); clients != nil {
+		channelKey := fmt.Sprintf("%s_%d", key, id)
+		if pool.Clients[channelKey] != nil {
 			body, err := ioutil.ReadAll(request.Body)
 			if err != nil {
 				log.Println("Error to read body request", err)
 				return
 			}
-
 			defer request.Body.Close()
-			for _, client := range clients {
-				client.Peer.WriteMessage(websocket.TextMessage, body)
+
+			if pool.Clients[channelKey] != nil {
+				for client, _ := range pool.Clients[channelKey] {
+					if client.ChannelKey == channelKey {
+						client.Send <- body
+					}
+				}
 			}
 		}
 	}
 }
 
-func startListenSocket(writer http.ResponseWriter, request *http.Request) {
-	peer, err := upgrader.Upgrade(writer, request, nil)
+func startListenSocket(pool *server.Pool, writer http.ResponseWriter, request *http.Request) {
+	ws, err := upgrader.Upgrade(writer, request, nil)
 	if err != nil {
 		log.Fatal("websocket conn failed", err)
 	}
@@ -194,23 +195,28 @@ func startListenSocket(writer http.ResponseWriter, request *http.Request) {
 	key := chi.URLParam(request, "key")
 	id, _ := strconv.Atoi(chi.URLParam(request, "id"))
 
-	go func() {
-		newClient := peers.AddClient(&server.ClientSession{
-			UserId: id,
-			Key:    key,
-			Room:   &room,
-			Peer:   peer,
-		})
-		peers.Start(newClient)
-	}()
+	channelClientKey := fmt.Sprintf("%s_%s_%d", room, key, id)
+	var client = &server.Client{
+		ChannelKey: channelClientKey,
+		Pool: pool,
+		Conn: ws,
+		Send: make(chan []byte),
+	}
+
+	client.Pool.Register <- client
+	go client.WritePump()
+	go client.ReadPump()
 }
 
-func startPublishToSocket(writer http.ResponseWriter, request *http.Request) {
+func startPublishToSocket(pool *server.Pool, writer http.ResponseWriter, request *http.Request) {
+	room := chi.URLParam(request, "room")
 	key := chi.URLParam(request, "key")
 	id, _ := strconv.Atoi(chi.URLParam(request, "id"))
 
-	log.Println("Key for published", fmt.Sprintf("%s_%d", key, id))
-	if clients := peers.GetClientChannels(fmt.Sprintf("%s_%d", key, id)); clients != nil {
+	log.Println("Key for published", fmt.Sprintf("%s_%s_%d", room, key, id))
+	channelKey := fmt.Sprintf("%s_%s_%d", room, key, id)
+
+	if pool.Clients[channelKey] != nil {
 		body, err := ioutil.ReadAll(request.Body)
 		if err != nil {
 			log.Println("Error to read body request", err)
@@ -218,9 +224,12 @@ func startPublishToSocket(writer http.ResponseWriter, request *http.Request) {
 		}
 		defer request.Body.Close()
 
-		for _, client := range clients {
-			//client.Peer.WriteMessage(websocket.TextMessage, body)
-			go client.Publish(body)
+		if pool.Clients[channelKey] != nil {
+			for client, _ := range pool.Clients[channelKey] {
+				if client.ChannelKey == channelKey {
+					client.Send <- body
+				}
+			}
 		}
 	}
 }

@@ -58,7 +58,7 @@ websocket_service:
         - /room/patient/.*
         - /room/admin/.*
         - /ws/.*
-        - /publish/
+        - /publish
     tls: []
     #  - secretName: chart-example-tls
     #    hosts:

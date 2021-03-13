@@ -1,0 +1,9 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 80,
+    "use_ssl": false,
+    "ssl_certificate": "/usr/local/nginx/ssl/magerya.crt",
+    "ssl_certificate_key": "/usr/local/nginx/ssl/magerya.key"
+  }
+}

@@ -1,0 +1,44 @@
+project: websocket-service
+configVersion: 1
+
+{{ $_ := set . "PROJECT_DIR_SRC" "/" }}
+{{ $_ := set . "PROJECT_DIR_OUT" "/app" }}
+{{ $_ := set . "PROJECT_BINARY_NAME" "websocket-service" }}
+---
+{{ include "artifact/build.yaml.tmpl" . }}
+---
+image: "websocket-service"
+from: alpine:3.13.1
+ansible:
+  beforeInstall:
+  - shell: addgroup -S app
+  - shell: adduser -S app -G app -h /app
+  - file:
+      path: /app/
+      state: directory
+      owner: app
+      group: app
+  - file:
+      path: /var/log/debug/
+      state: directory
+      owner: app
+      group: app
+  install:
+  beforeSetup:
+  setup:
+docker:
+  WORKDIR: {{ .PROJECT_DIR_OUT }}
+  #USER: app
+import:
+- artifact: build
+  add: {{ .PROJECT_DIR_OUT }}/websocket-service
+  to: {{ .PROJECT_DIR_OUT }}/websocket-service
+  after: install
+
+# git:
+# - add: {{ .PROJECT_DIR_SRC }}
+#   to: {{ .PROJECT_DIR_OUT }}
+  # owner: www-data
+  # group: www-data
+
+#mount:

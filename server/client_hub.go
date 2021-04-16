@@ -70,20 +70,19 @@ func (pool *Pool) StartCollector() {
 			clientMap[client] = true
 			pool.Clients[client.ChannelKey] = clientMap
 		case client := <-pool.Unregister:
-			if _, ok := pool.Clients[client.ChannelKey]; ok {
-				delete(pool.Clients[client.ChannelKey], client)
-				log.Println("Unregister client", client, pool.Clients[client.ChannelKey])
+			if clKey, ok := pool.Clients[client.ChannelKey]; ok {
+				if active := clKey[client]; active {
+					log.Println("Before: Unregister client", client, pool.Clients[client.ChannelKey])
+					client.Conn.Close()
+					delete(pool.Clients[client.ChannelKey], client)
+					log.Println("After: Unregister client", client, pool.Clients[client.ChannelKey])
+				}
 			}
 		}
 	}
 }
 
 func (c *Client) ReadPump() {
-	defer func() {
-		c.Pool.Unregister <- c
-		c.Conn.Close()
-	}()
-
 	c.Conn.SetReadLimit(maxMessageSize)
 	c.Conn.SetReadDeadline(time.Now().Add(pongWait))
 	c.Conn.SetPongHandler(func(string) error { c.Conn.SetReadDeadline(time.Now().Add(pongWait)); return nil })
@@ -94,6 +93,7 @@ func (c *Client) ReadPump() {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				log.Printf("error: %v", err)
 			}
+			c.Pool.Unregister <- c
 			break
 		}
 	}
@@ -101,10 +101,7 @@ func (c *Client) ReadPump() {
 
 func (c *Client) WritePump() {
 	ticker := time.NewTicker(pingPeriod)
-	defer func() {
-		ticker.Stop()
-		c.Conn.Close()
-	}()
+	stopped := make(chan bool, 1)
 	for {
 		select {
 		case message, ok := <-c.Send:
@@ -122,17 +119,27 @@ func (c *Client) WritePump() {
 				log.Println("Error for next writer", err)
 				return
 			}
-			log.Println("Try to write message to channel", c.ChannelKey)
-			w.Write(message)
+
+			byteWrite, err := w.Write(message)
+			if err != nil {
+				log.Println("Error write message to channel", c.ChannelKey, err)
+				return
+			}
+
+			log.Println("Write message to channel by byte count", c.ChannelKey, byteWrite)
 
 			if err := w.Close(); err != nil {
 				log.Println("Close channel for client", c.ChannelKey)
 				return
 			}
+		case <-stopped:
+			ticker.Stop()
+			return
 		case <-ticker.C:
 			c.Conn.SetWriteDeadline(time.Now().Add(writeWait))
+			log.Println("Write ping message to client", c.ChannelKey)
 			if err := c.Conn.WriteControl(websocket.PingMessage, newline, time.Now().Add(writeWait)); err != nil {
-				log.Println("Write ping message to client", c.ChannelKey)
+				log.Println("Client channel is closed", c.ChannelKey)
 				c.Pool.Unregister <- c
 				return
 			}

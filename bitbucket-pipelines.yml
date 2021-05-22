@@ -1,5 +1,20 @@
+options:
+  docker: true
+
+clone:
+  lfs: true
+
 pipelines:
   branches:  # Pipelines that run automatically on a commit to a branch
+    dev:
+      - step:
+          image: atlassian/default-image:2
+          name: Run deployment by werf
+          deployment: Kubernates
+          script:
+            - ssh -p $PORT $USERNAME@$HOST 'bash -s' < deployment.sh $SERVICE_HOME $BITBUCKET_BRANCH
+          services:
+            - docker
     develop:
       - step:
           name: develop

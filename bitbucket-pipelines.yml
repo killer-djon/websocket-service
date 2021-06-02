@@ -38,16 +38,16 @@ pipelines:
             - $SSH_CMD "cd $DIR_HOME && go build ."
             - $SSH_CMD "cd $DIR_HOME && mv websocket-service /home/magerya/go/bin/"
             - $SSH_CMD "sudo supervisorctl restart websocket:*"
-
-    master:
-      - step:
-          name: production deployment
-          deployment: production
-          script:
-            - SSH_CMD="ssh -p $PORT $USERNAME@$HOST"
-            - $SSH_CMD "cd $DIR_HOME && git checkout -- . && git checkout master && git pull origin master"
-            - $SSH_CMD "cd $DIR_HOME && go mod download"
-            - $SSH_CMD "cd $DIR_HOME && go mod tidy"
-            - $SSH_CMD "cd $DIR_HOME && go build ."
-            - $SSH_CMD "cd $DIR_HOME && mv websocket-service /home/magerya/go/bin/"
-            - $SSH_CMD "sudo supervisorctl restart websocket:*"
+#
+#    master:
+#      - step:
+#          name: production deployment
+#          deployment: production
+#          script:
+#            - SSH_CMD="ssh -p $PORT $USERNAME@$HOST"
+#            - $SSH_CMD "cd $DIR_HOME && git checkout -- . && git checkout master && git pull origin master"
+#            - $SSH_CMD "cd $DIR_HOME && go mod download"
+#            - $SSH_CMD "cd $DIR_HOME && go mod tidy"
+#            - $SSH_CMD "cd $DIR_HOME && go build ."
+#            - $SSH_CMD "cd $DIR_HOME && mv websocket-service /home/magerya/go/bin/"
+#            - $SSH_CMD "sudo supervisorctl restart websocket:*"

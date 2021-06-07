@@ -46,10 +46,11 @@ websocket_service:
       nginx.ingress.kubernetes.io/use-regex: "true"
       nginx.ingress.kubernetes.io/proxy-send-timeout: "36000"
       nginx.ingress.kubernetes.io/proxy-read-timeout: "36000"
+      nginx.ingress.kubernetes.io/proxy-body-size: 100m
       #nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
-      # nginx.ingress.kubernetes.io/configuration-snippet: |
-      #   proxy_set_header Upgrade $http_upgrade;
-      #   proxy_set_header Connection "Upgrade";
+      nginx.ingress.kubernetes.io/configuration-snippet: |
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "Upgrade";
       # kubernetes.io/ingress.class: nginx
       # kubernetes.io/tls-acme: "true"
     hosts:

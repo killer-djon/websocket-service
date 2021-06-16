@@ -42,11 +42,12 @@ websocket_service:
   ingress:
     enabled: true
     annotations:
+      nginx.org/websocket-services: "websocket-service"
       nginx.ingress.kubernetes.io/use-regex: "true"
       nginx.ingress.kubernetes.io/proxy-body-size: 100m
-#      nginx.ingress.kubernetes.io/configuration-snippet: |
-#        proxy_set_header Upgrade $http_upgrade;
-#        proxy_set_header Connection "Upgrade";
+      nginx.ingress.kubernetes.io/configuration-snippet: |
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "Upgrade";
     hosts:
       - host: magerya.ru
         paths:

@@ -55,6 +55,7 @@ websocket_service:
         - /room/admin/.*
         - /ws/.*
         - /publish
+        - /publish/.*
 #    tls:
 #      - secretName: websocket-service-tls
 #        hosts:

@@ -1,2 +1,7 @@
 /.idea
 /config.json
+.helm
+.werf
+werf.yaml
+deployment.sh
+bitbucket-pipelines.yml
